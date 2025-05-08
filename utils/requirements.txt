@@ -1,0 +1,11 @@
+clip
+imageio
+numpy
+opencv_python
+pillow==10.4.0
+pycocotools
+scipy
+torch
+torchvision
+tqdm
+utils
