@@ -3,6 +3,8 @@
 I am wanting to gather the results of running a YOLOv8 model on the Orion O6 NPU.  Would you please assist me with this by following
 the instructions below.
 
+**NOTE: This process requires Radxa's Debian OS image.**
+
 
 ## Instructions
 
