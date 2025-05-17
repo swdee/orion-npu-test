@@ -62,7 +62,7 @@ def get_data_info(d_type : noe_data_type_t) -> tuple:
         type_info = (np.int32, -2147483648, 2147483647, D_INT32)
     elif d_type == noe_data_type_t.NOE_DATA_TYPE_U32:
         type_info = (np.uint32, 0, 4294967295, D_UINT32)
-    elif d_type == noe_data_type_t.NOE_DATA_TYPE_f16:
+    elif d_type == noe_data_type_t.NOE_DATA_TYPE_F16:
         type_info = (np.float16, 0, 0, D_INT8)
     else:
         raise NotImplementedError(f"Not Implement d_type {d_type}")
@@ -107,6 +107,11 @@ class EngineInfer:
         self.cnt_time = 0
         self.acc_time = 0
         self._thp_list = []  # throughout info list
+
+        # New timing variables
+        self.data_prep_time = 0
+        self.npu_infer_time = 0
+        self.data_retrieval_time = 0
 
         self._init_context()
         self._load_graph()
@@ -198,6 +203,107 @@ class EngineInfer:
             raise RuntimeError("npu: noe_create_job failed")
         self.job_id = retmap["data"]
         print("npu: noe_create_job success")
+
+
+    def forward2(self, input_datas: Union[list, np.ndarray]) -> list:
+        """
+        Perform a forward pass through the model using the provided input data.
+        """
+        if not isinstance(input_datas, list):
+            input_datas = [input_datas]
+        assert type(input_datas) == list, "input datas must a list."
+        assert len(input_datas) == len(
+            self.in_tensor_desc
+        ), f"len of input_datas:{len(input_datas)} does not match expected: {len(self.in_tensor_desc)}."
+
+        job_id = self.job_id
+        self.output = []
+
+        # 1. Measure Data Preparation Time (before loading data to NPU)
+        t0_prep = time.perf_counter()
+        for i, input_data in enumerate(input_datas):
+            input_data = np.round(
+                input_data.astype(float) * self.in_tensor_desc[i].scale
+                - self.in_tensor_desc[i].zero_point
+            )
+            input_data = np.clip(
+                input_data, self.input_dtype_min[i], self.input_dtype_max[i]
+            ).astype(self.input_type[i])
+            assert (
+                len(input_data.tobytes()) == self.in_tensor_desc[i].size
+            ), f"the input size is {len(input_data.tobytes())}, must equal to {self.in_tensor_desc[i].size}"
+            self.npu.noe_load_tensor(job_id, i, input_data.tobytes())
+        self.data_prep_time = time.perf_counter() - t0_prep
+
+        # 2. Measure NPU Inference Time
+        t0_infer = time.perf_counter()
+        self.npu.noe_job_infer_sync(job_id, -1)
+        self.npu_infer_time = time.perf_counter() - t0_infer
+
+        # 3. Measure Data Retrieval Time (after inference)
+        t0_retrieval = time.perf_counter()
+
+        for j in range(len(self.out_tensor_desc)):
+            # Step 1: Measure the time for the `noe_get_tensor()` call
+            t0_get_tensor = time.perf_counter()
+            retmap = self.npu.noe_get_tensor(job_id, NOE_TENSOR_TYPE_OUTPUT, j, self.outtype[j])
+            get_tensor_time = time.perf_counter() - t0_get_tensor
+            print(f"Tensor retrieval time for tensor {j}: {get_tensor_time * 1000:.2f} ms")
+
+            if retmap["ret"][0] != 0:
+                raise RuntimeError("npu: noe_get_tensor failed")
+
+            # Step 2: Check the size of the retrieved data
+            data_size = len(retmap["data"])  # Get the size of the data returned
+            print(f"Size of data retrieved for tensor {j}: {data_size} bytes")
+
+            # Step 2: Measure the time for data conversion to numpy array
+            t0_data_conversion = time.perf_counter()
+            if self.output_type[j] == np.float16:
+                output_data = np.array(retmap["data"]).astype(np.int8).tobytes()
+                output_data = read_and_print_float16(output_data)
+            else:
+                output_data = np.array(retmap["data"], dtype=self.output_type[j])
+            data_conversion_time = time.perf_counter() - t0_data_conversion
+            print(f"Data conversion time for tensor {j}: {data_conversion_time * 1000:.2f} ms")
+
+            # Step 3: Measure the time for normalization
+            t0_normalization = time.perf_counter()
+            self.output.append(
+                (output_data.astype(np.float32) + self.out_tensor_desc[j].zero_point) / self.out_tensor_desc[j].scale
+            )
+            normalization_time = time.perf_counter() - t0_normalization
+            print(f"Normalization time for tensor {j}: {normalization_time * 1000:.2f} ms")
+
+
+        self.data_retrieval_time = time.perf_counter() - t0_retrieval
+
+        return self.output
+
+    def get_total_time(self):
+        """ 
+        Get total time (data prep + NPU inference + data retrieval)
+        """
+        return self.data_prep_time + self.npu_infer_time + self.data_retrieval_time
+
+    def get_npu_infer_time(self):
+        """
+        Return only the time spent on NPU inference
+        """
+        return self.npu_infer_time
+
+    def get_data_prep_time(self):
+        """
+        Return the time spent on preparing the data before passing it to NPU
+        """
+        return self.data_prep_time
+
+    def get_data_retrieval_time(self):
+        """
+        Return the time spent on retrieving the data from NPU after inference
+        """
+        return self.data_retrieval_time
+
 
     def forward(self, input_datas : Union[list, np.ndarray]) -> list:
         """

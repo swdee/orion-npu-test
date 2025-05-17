@@ -71,6 +71,8 @@ if __name__ == "__main__":
 
     # Collect timing statistics
     all_times = []
+    engine_times = []  # Store engine inference times
+    engine_fps = []  # Store engine FPS
 
     for img_name in image_list:
         # Preprocess image
@@ -80,14 +82,28 @@ if __name__ == "__main__":
         data = data.astype(np.float32)
 
         # Warm-up run
-        _ = model.forward(data)[0]
+        _ = model.forward2(data)[0]
 
         # Timed runs
         for _ in range(args.runs):
+            print("")
             t0 = time.perf_counter()
-            out = model.forward(data)[0]
+            out = model.forward2(data)[0]
             dt = (time.perf_counter() - t0) * 1000.0  # milliseconds
             all_times.append(dt)
+
+            print(f"Data preparation time: {model.get_data_prep_time() * 1000:.2f} ms")
+            print(f"NPU inference time: {model.get_npu_infer_time() * 1000:.2f} ms")
+            print(f"Data retrieval time: {model.get_data_retrieval_time() * 1000:.2f} ms")
+            print(f"Total time: {model.get_total_time() * 1000:.2f} ms")
+
+            '''
+            # Get engine timing
+            engine_duration = model.get_cur_dur()
+            engine_fps_value = model.get_cur_fps()
+            engine_times.append(engine_duration)
+            engine_fps.append(engine_fps_value)
+            '''
 
         # Post-process the last output
         pred = out.reshape(84, 8400).transpose(1, 0)
@@ -121,6 +137,18 @@ if __name__ == "__main__":
         mx = max(all_times)
         print(f"\nInference over {len(all_times)} runs:")
         print(f"  avg = {avg:.2f} ms   min = {mn:.2f} ms   max = {mx:.2f} ms")
+
+
+    # Print engine benchmarking
+    if engine_times:
+        engine_avg = sum(engine_times) / len(engine_times)
+        engine_min = min(engine_times)
+        engine_max = max(engine_times)
+        print(f"\nEngine Inference over {len(engine_times)} runs:")
+        print(f"  avg = {engine_avg:.2f} ms   min = {engine_min:.2f} ms   max = {engine_max:.2f} ms")
+
+        engine_avg_fps = sum(engine_fps) / len(engine_fps)
+        print(f"  Engine FPS (avg) = {engine_avg_fps:.2f} FPS")
 
     # Clean up the model
     model.clean()
