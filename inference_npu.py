@@ -13,6 +13,16 @@ import sys
 import time
 import platform
 
+# Pin the process to the high-performance (big) cores on Orion O6
+try:
+    use_cores = {0, 11, 9, 10} # a720 cores
+    #use_cores = {1,2,3,4} # a520 cores
+    os.sched_setaffinity(0, use_cores)
+    print(f"Pinned process to cores: {sorted(use_cores)}")
+except AttributeError:
+    print("Warning: os.sched_setaffinity not supported on this platform")
+
+
 # Determine the directory containing the current script
 script_dir = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, script_dir)
